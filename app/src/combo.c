@@ -21,6 +21,9 @@
 
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
+
+#define DYNAMIC_COMBO_TERM_TIME 300
+
 #if DT_HAS_COMPAT_STATUS_OKAY(DT_DRV_COMPAT)
 
 struct combo_cfg {
@@ -28,6 +31,7 @@ struct combo_cfg {
     int32_t key_position_len;
     struct zmk_behavior_binding behavior;
     int32_t timeout_ms;
+    int32_t timeout_ms_freestanding;
     // if slow release is set, the combo releases when the last key is released.
     // otherwise, the combo releases when the first key is released.
     bool slow_release;
@@ -69,6 +73,8 @@ int active_combo_count = 0;
 
 struct k_delayed_work timeout_task;
 int64_t timeout_task_timeout_at;
+
+int64_t timestamp_last_keypress;
 
 // Store the combo key pointer in the combos array, one pointer for each key position
 // The combos are sorted shortest-first, then by virtual-key-position.
@@ -130,7 +136,11 @@ static int setup_candidates_for_first_keypress(int32_t position, int64_t timesta
         }
         if (combo_active_on_layer(combo, highest_active_layer)) {
             candidates[number_of_combo_candidates].combo = combo;
-            candidates[number_of_combo_candidates].timeout_at = timestamp + combo->timeout_ms;
+            if (timestamp - timestamp_last_keypress < DYNAMIC_COMBO_TERM_TIME) {
+                candidates[number_of_combo_candidates].timeout_at = timestamp + combo->timeout_ms;
+            } else {
+                candidates[number_of_combo_candidates].timeout_at = timestamp + combo->timeout_ms_freestanding;
+            }
             number_of_combo_candidates++;
         }
         // LOG_DBG("combo timeout %d %d %d", position, i, candidates[i].timeout_at);
@@ -460,7 +470,9 @@ static int position_state_changed_listener(const zmk_event_t *ev) {
     }
 
     if (data->state) { // keydown
-        return position_state_down(ev, data);
+        int ret = position_state_down(ev, data);
+        timestamp_last_keypress = data->timestamp;
+        return ret;
     } else { // keyup
         return position_state_up(ev, data);
     }
@@ -472,6 +484,7 @@ ZMK_SUBSCRIPTION(combo, zmk_position_state_changed);
 #define COMBO_INST(n)                                                                              \
     static struct combo_cfg combo_config_##n = {                                                   \
         .timeout_ms = DT_PROP(n, timeout_ms),                                                      \
+        .timeout_ms_freestanding = DT_PROP(n, timeout_ms_freestanding),                            \
         .key_positions = DT_PROP(n, key_positions),                                                \
         .key_position_len = DT_PROP_LEN(n, key_positions),                                         \
         .behavior = ZMK_KEYMAP_EXTRACT_BINDING(0, n),                                              \
